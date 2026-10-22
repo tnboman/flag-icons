@@ -1,36 +1,39 @@
 """Build 12 glass snowflake variations in Blender from the Access brand shape.
 
 Every brand shape stays a distinct glass object (linked copies of one mesh), never merged.
-Shapes vary in scale and angle and always appear with their mirror image across each arm,
-so the flakes have a crystal's mirror symmetry instead of a rotating pinwheel.
+The brand shape is close to a rhombus, so turned along its long diagonal it reads as a
+crystal facet. Each arm is a stack of V rows: a shape and its mirror image opening outward
+from the arm axis. Repeating that around 6 arms gives a crystal's mirror symmetry.
 
 Usage:
     python3 snowflakes/build_snowflakes.py [--samples N] [--res PX] [--only i,j]
 
 Outputs (next to this script):
-    snowflakes.blend            all 12 variations laid out in a 4x3 grid
+    snowflakes.blend            all 12 variations side by side
     renders/snowflake_XX.png    one render per variation
     renders/contact_sheet.png   all renders in one image
 """
 import argparse
+import itertools
 import math
 import os
 import re
 import sys
 
 import bpy
-import numpy as np
 import shapely
+from mathutils import Matrix
 from shapely import affinity
 from shapely.geometry import Polygon
 from shapely.geometry.polygon import orient
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 RENDER_DIR = os.path.join(HERE, "renders")
-ICE_IOR = 1.31
+GLASS_IOR = 1.5
+GAP = 0.012  # minimum clear space between any two shapes
 
 
-# ---------------------------------------------------------------- 2D shape
+# ---------------------------------------------------------------- brand shape
 
 # Access brand shape (AccessShape_AccessBlue), path copied verbatim from the brand SVG.
 BRAND_PATH = (
@@ -42,7 +45,7 @@ ACCESS_BLUE = (0.0, 0.51, 0.89)  # #00bdf2 in linear RGB
 
 
 def parse_svg_path(d, steps=12):
-    """Supports the commands used by the brand path: M H h L l C c (absolute/relative)."""
+    """Supports the commands used by the brand path: M H h L l C c V v (absolute/relative)."""
     tokens = re.findall(r"[MHhLlCcVvZz]|-?\d*\.?\d+(?:e-?\d+)?", d)
     pts, i, cmd = [], 0, None
     x = y = 0.0
@@ -83,19 +86,19 @@ def parse_svg_path(d, steps=12):
 
 
 def brand_unit():
-    """Brand shape centred on the origin, 1 unit wide, long axis along +x, y flipped to y-up."""
+    """Brand shape centred on the origin, y-up, turned so its long diagonal lies on +x with length 1."""
     poly = Polygon([(px, -py) for px, py in parse_svg_path(BRAND_PATH)]).buffer(0)
-    minx, miny, maxx, maxy = poly.bounds
-    poly = affinity.translate(poly, -(minx + maxx) / 2, -(miny + maxy) / 2)
-    return affinity.scale(poly, 1 / (maxx - minx), 1 / (maxx - minx), origin=(0, 0))
+    poly = affinity.translate(poly, -poly.centroid.x, -poly.centroid.y)
+    p, q = max(itertools.combinations(poly.exterior.coords, 2), key=lambda pq: math.dist(*pq))
+    poly = affinity.rotate(poly, -math.atan2(q[1] - p[1], q[0] - p[0]), origin=(0, 0), use_radians=True)
+    return affinity.scale(poly, 1 / math.dist(p, q), 1 / math.dist(p, q), origin=(0, 0))
 
 
 BRAND = brand_unit()
 BRAND_FIT = BRAND.simplify(0.004).buffer(0.002)
 
 
-GAP = 0.012  # minimum clear space between any two shapes
-
+# ---------------------------------------------------------------- symmetry and layout
 
 def piece_matrix(x, y, s, rot=0.0, mirror=False):
     """2x2 linear part and offset for one brand shape: scale s, optional mirror, rotate, place."""
@@ -105,13 +108,9 @@ def piece_matrix(x, y, s, rot=0.0, mirror=False):
 
 
 def d6_orbit(spec):
-    """Place one shape spec in all 12 positions of the snowflake's mirror symmetry.
-
-    The 6 rotations alone would make a pinwheel (the brand shape is slanted, so it spins).
-    Adding the mirror image across every arm axis cancels the spin: each shape always
-    appears together with its reflection, giving the crystal's mirrored architecture.
-    """
-    (a, t) = piece_matrix(*spec)
+    """Place one shape spec in all 12 positions of the snowflake's mirror symmetry:
+    6 arms, each with the shape's mirror image across the arm axis."""
+    a, t = piece_matrix(*spec)
     out = []
     for k in range(6):
         c, n = math.cos(math.radians(60 * k)), math.sin(math.radians(60 * k))
@@ -128,53 +127,32 @@ def footprint(ga, gt, shape=None):
     return affinity.affine_transform(shape, [ga[0][0], ga[0][1], ga[1][0], ga[1][1], gt[0], gt[1]])
 
 
-def orbit_prints(spec):
-    # fitting only: a slightly coarser outline keeps the search fast, layout() checks the exact one
-    return np.array([footprint(ga, gt, BRAND_FIT) for ga, gt, _ in d6_orbit(spec)])
-
-
-def clearance(a, b):
-    return float(shapely.distance(a[:, None], b[None, :]).min())
-
-
-def fit_specs(specs):
-    """Keep every shape distinct: nudge each spec off the arm axis until it clears its own
-    mirror images, then shrink a spec that still touches an earlier one."""
-    fitted = []
-    for spec in specs:
-        x, y, s, rot, *mirror = spec
-        mirror = bool(mirror and mirror[0])
-        s0 = s
-        while True:
-            if s < 0.3 * s0:
-                raise ValueError(f"spec {spec} cannot be fitted without touching another shape")
-            cand = (x, y, s, rot, mirror)
-            prints = orbit_prints(cand)
-            if float(shapely.distance(prints[0], prints[1:]).min()) < GAP:
-                # move off the arm axis while that helps; near the 30 degree line, shrink instead
-                if math.degrees(math.atan2(y + 0.004, x)) < 24:
-                    y += 0.004
-                else:
-                    s *= 0.97
-                continue
-            if any(clearance(prints, orbit_prints(f)) < GAP for f in fitted):
-                s *= 0.97
-                continue
-            break
-        fitted.append(cand)
-    return fitted
+def row(t, a, s, axis=0):
+    """A V row: brand shape of length s rooted on an axis (0 = arm, 30 = between arms) at
+    distance t from the centre, opening outward at a degrees. Its mirror image comes from
+    d6_orbit. The root is pushed off the axis just far enough that the two never touch."""
+    c, n = math.cos(math.radians(axis)), math.sin(math.radians(axis))
+    off = 0.0
+    while True:
+        lx = t + 0.5 * s * math.cos(math.radians(a))
+        ly = off + 0.5 * s * math.sin(math.radians(a))
+        spec = (c * lx - n * ly, n * lx + c * ly, s, a + axis, False)
+        prints = [footprint(ga, gt, BRAND_FIT) for ga, gt, _ in d6_orbit(spec)]
+        if float(shapely.distance(prints[0], prints[1:]).min()) >= GAP:
+            return spec
+        off += 0.003
 
 
 def layout(p):
     """All shapes of one snowflake as (matrix, offset, scale). Fails if any two touch."""
-    shapes = [o for spec in fit_specs(p["specs"]) for o in d6_orbit(spec)]
+    shapes = [o for spec in p["rows"] for o in d6_orbit(spec)]
     prints = [footprint(ga, gt) for ga, gt, _ in shapes]
     tree = shapely.STRtree(prints)
     for i, g in enumerate(prints):
         for j in tree.query(g.buffer(GAP)):
             if j > i and g.distance(prints[j]) < GAP:
                 raise ValueError(f"shapes {i} and {j} touch in {p['name']}")
-    return shapes, prints
+    return shapes
 
 
 # ---------------------------------------------------------------- mesh
@@ -210,23 +188,40 @@ def prism_mesh(name, poly, z0, z1):
     return me
 
 
-def brand_mesh(thick):
-    """One unit brand-shape glass slab; every shape in every snowflake is a linked copy of it."""
-    me = prism_mesh(f"AccessShape_t{thick}", BRAND, -thick / 2, thick / 2)
-    return me
+def brand_mesh(thick, material):
+    """One unit brand-shape glass slab with a fully rounded rim. Every shape in every
+    snowflake is a linked copy of it, so the rounding is applied once and shared."""
+    me = prism_mesh("AccessShape", BRAND, -thick / 2, thick / 2)
+    tmp = bpy.data.objects.new("tmp", me)
+    bpy.context.scene.collection.objects.link(tmp)
+    bev = tmp.modifiers.new("rim", "BEVEL")
+    bev.width = thick * 0.48
+    bev.segments = 10
+    bev.profile = 0.5
+    bev.limit_method = "ANGLE"
+    bev.angle_limit = math.radians(40)
+    bev.harden_normals = False
+    # the brand shape is convex, so the inset can't fold over; without this the short
+    # corner edges clamp the rounding to almost nothing
+    bev.use_clamp_overlap = False
+    dg = bpy.context.evaluated_depsgraph_get()
+    rounded = bpy.data.meshes.new_from_object(tmp.evaluated_get(dg))
+    rounded.name = "AccessShape_glass"
+    bpy.data.objects.remove(tmp)
+    bpy.data.meshes.remove(me)
+    # only the rim is curved: the flat faces stay flat so the glass reads clear in the middle
+    for f in rounded.polygons:
+        f.use_smooth = abs(f.normal.z) < 0.999
+    rounded.materials.append(material)
+    return rounded
 
 
-def build_snowflake(idx, p, material, location):
-    from mathutils import Matrix
-
-    shapes, _ = layout(p)
+def build_snowflake(idx, p, mesh, location):
     root = bpy.data.objects.new(f"Snowflake_{idx:02d}", None)
     root.empty_display_size = 0.3
     bpy.context.scene.collection.objects.link(root)
-    me = brand_mesh(p.get("thick", 0.16))
-    me.materials.append(material)
-    for k, (ga, gt, s) in enumerate(shapes):
-        ob = bpy.data.objects.new(f"Snowflake_{idx:02d}_shape_{k:02d}", me)
+    for k, (ga, gt, s) in enumerate(layout(p)):
+        ob = bpy.data.objects.new(f"Snowflake_{idx:02d}_shape_{k:03d}", mesh)
         bpy.context.scene.collection.objects.link(ob)
         # thickness scales with the shape so small shapes stay in proportion
         ob.matrix_basis = Matrix(((ga[0][0], ga[0][1], 0, gt[0]),
@@ -234,30 +229,57 @@ def build_snowflake(idx, p, material, location):
                                   (0, 0, s, 0),
                                   (0, 0, 0, 1)))
         ob.parent = root
-        bev = ob.modifiers.new("bevel", "BEVEL")
-        bev.width = p.get("bevel", 0.03)
-        bev.segments = 4
-        bev.limit_method = "ANGLE"
-        bev.angle_limit = math.radians(30)
-        bev.harden_normals = True
+    # stand the flake upright, facing the camera, one arm pointing up
     root.location = location
-    root.rotation_euler.z = math.radians(90)
+    root.rotation_euler = (math.radians(90), math.radians(90), 0)
     return root
 
 
 # ---------------------------------------------------------------- look
 
-def glass_material(name, tint, film):
+def glass_material():
+    m = bpy.data.materials.new("AccessGlass")
+    bsdf = m.node_tree.nodes["Principled BSDF"]
+    bsdf.inputs["Base Color"].default_value = (0.86, 0.93, 1.0, 1)
+    bsdf.inputs["Transmission Weight"].default_value = 1.0
+    bsdf.inputs["Roughness"].default_value = 0.0
+    bsdf.inputs["IOR"].default_value = GLASS_IOR
+    # thin film tints the rim reflections orange and blue, standing in for dispersion
+    bsdf.inputs["Thin Film Thickness"].default_value = 520
+    bsdf.inputs["Thin Film IOR"].default_value = 1.33
+
+    # where the rounded rim turns away from the camera, fade to a dark glossy navy: this is
+    # the inked outline that makes each shape read as a solid piece of glass
+    nt = m.node_tree
+    rim = nt.nodes.new("ShaderNodeBsdfPrincipled")
+    rim.inputs["Base Color"].default_value = (0.03, 0.06, 0.2, 1)
+    rim.inputs["Metallic"].default_value = 1.0
+    rim.inputs["Roughness"].default_value = 0.07
+    rim.inputs["Thin Film Thickness"].default_value = 620
+    rim.inputs["Thin Film IOR"].default_value = 1.4
+    weight = nt.nodes.new("ShaderNodeLayerWeight")
+    weight.inputs["Blend"].default_value = 0.5
+    ramp = nt.nodes.new("ShaderNodeValToRGB")
+    ramp.color_ramp.elements[0].position = 0.38
+    ramp.color_ramp.elements[1].position = 0.75
+    mix = nt.nodes.new("ShaderNodeMixShader")
+    nt.links.new(weight.outputs["Facing"], ramp.inputs["Fac"])
+    nt.links.new(ramp.outputs["Color"], mix.inputs["Fac"])
+    nt.links.new(bsdf.outputs["BSDF"], mix.inputs[1])
+    nt.links.new(rim.outputs["BSDF"], mix.inputs[2])
+    nt.links.new(mix.outputs["Shader"], nt.nodes["Material Output"].inputs["Surface"])
+    return m
+
+
+def emission_material(name, color, strength):
     m = bpy.data.materials.new(name)
     nt = m.node_tree
-    bsdf = nt.nodes["Principled BSDF"]
-    bsdf.inputs["Base Color"].default_value = (*tint, 1)
-    bsdf.inputs["Transmission Weight"].default_value = 1.0
-    bsdf.inputs["Roughness"].default_value = 0.015
-    bsdf.inputs["IOR"].default_value = ICE_IOR
-    bsdf.inputs["Thin Film Thickness"].default_value = film
-    bsdf.inputs["Thin Film IOR"].default_value = 1.45
-    return m
+    nt.nodes.remove(nt.nodes["Principled BSDF"])
+    em = nt.nodes.new("ShaderNodeEmission")
+    em.inputs["Color"].default_value = (*color, 1)
+    em.inputs["Strength"].default_value = strength
+    nt.links.new(em.outputs["Emission"], nt.nodes["Material Output"].inputs["Surface"])
+    return m, nt, em
 
 
 def setup_scene(samples, res):
@@ -267,153 +289,152 @@ def setup_scene(samples, res):
     sc.render.engine = "CYCLES"
     sc.cycles.device = "CPU"
     sc.cycles.samples = samples
-    sc.cycles.max_bounces = 24
-    sc.cycles.transmission_bounces = 24
-    sc.cycles.glossy_bounces = 12
+    sc.cycles.max_bounces = 32
+    sc.cycles.transmission_bounces = 32
+    sc.cycles.glossy_bounces = 16
     sc.cycles.caustics_refractive = False
     sc.cycles.caustics_reflective = False
     sc.cycles.blur_glossy = 1.0
     sc.cycles.use_denoising = False
-    sc.render.resolution_x = sc.render.resolution_y = res
-    sc.render.film_transparent = False
-    sc.view_settings.view_transform = "AgX"
-    sc.view_settings.look = "AgX - Medium High Contrast"
+    sc.render.resolution_x = res
+    sc.render.resolution_y = round(res * 2 / 3)
+    sc.view_settings.view_transform = "Standard"
+    sc.view_settings.look = "None"
+    sc.view_settings.exposure = 0.0
 
     world = bpy.data.worlds.get("World") or bpy.data.worlds.new("World")
     sc.world = world
     bg = world.node_tree.nodes["Background"]
-    bg.inputs["Color"].default_value = (0.3, 0.55, 0.8, 1)
-    # bright ring high in the sky: the top faces mirror it, which is what reads as glass
-    wt = world.node_tree
-    wtc = wt.nodes.new("ShaderNodeTexCoord")
-    sep = wt.nodes.new("ShaderNodeSeparateXYZ")
-    band = wt.nodes.new("ShaderNodeValToRGB")
-    els = band.color_ramp.elements
-    els[0].position, els[0].color = 0.80, (0, 0, 0, 1)
-    els[1].position, els[1].color = 0.86, (1, 1, 1, 1)
-    e = els.new(0.93)
-    e.color = (1, 1, 1, 1)
-    e = els.new(0.98)
-    e.color = (0, 0, 0, 1)
-    strength = wt.nodes.new("ShaderNodeMath")
-    strength.operation = "MULTIPLY_ADD"
-    strength.inputs[1].default_value = 5.0
-    strength.inputs[2].default_value = 0.8
-    wt.links.new(wtc.outputs["Generated"], sep.inputs[0])
-    wt.links.new(sep.outputs["Z"], band.inputs["Fac"])
-    wt.links.new(band.outputs["Color"], strength.inputs[0])
-    wt.links.new(strength.outputs["Value"], bg.inputs["Strength"])
+    bg.inputs["Color"].default_value = (0.45, 0.62, 0.95, 1)
+    bg.inputs["Strength"].default_value = 0.5
 
     bpy.ops.object.empty_add(location=(0, 0, 0))
     rig = bpy.context.object
     rig.name = "CameraRig"
 
-    # backdrop: pale ice centre fading to deep Access Blue, gives the glass something to refract
-    bpy.ops.mesh.primitive_plane_add(size=60, location=(0, 0, -0.9))
+    # glossy pale floor: carries the flake's reflection and soft light pools
+    bpy.ops.mesh.primitive_plane_add(size=40, location=(0, 0, 0))
+    floor = bpy.context.object
+    floor.name = "Floor"
+    fm = bpy.data.materials.new("Floor")
+    fb = fm.node_tree.nodes["Principled BSDF"]
+    fb.inputs["Base Color"].default_value = (0.22, 0.36, 0.72, 1)
+    fb.inputs["Roughness"].default_value = 0.18
+    fb.inputs["Coat Weight"].default_value = 1.0
+    fb.inputs["Coat Roughness"].default_value = 0.03
+    floor.data.materials.append(fm)
+    floor.parent = rig
+
+    # backdrop: bright centre glow falling off to soft blue, behind the flake
+    bpy.ops.mesh.primitive_plane_add(size=1, location=(0, 4.0, 3.0), rotation=(math.radians(90), 0, 0))
     back = bpy.context.object
     back.name = "Backdrop"
-    m = bpy.data.materials.new("Backdrop")
-    nt = m.node_tree
-    nt.nodes.remove(nt.nodes["Principled BSDF"])
-    em = nt.nodes.new("ShaderNodeEmission")
-    em.inputs["Strength"].default_value = 1.0
-    tex = nt.nodes.new("ShaderNodeTexGradient")
-    tex.gradient_type = "SPHERICAL"
-    mapn = nt.nodes.new("ShaderNodeMapping")
-    mapn.inputs["Scale"].default_value = (0.28, 0.28, 0.28)
+    back.scale = (30, 12, 1)
+    m, nt, em = emission_material("Backdrop", (1, 1, 1), 0.9)
     tc = nt.nodes.new("ShaderNodeTexCoord")
+    grad = nt.nodes.new("ShaderNodeTexGradient")
+    grad.gradient_type = "SPHERICAL"
+    mapn = nt.nodes.new("ShaderNodeMapping")
+    # map the gradient onto the part of the backdrop the camera actually sees
+    mapn.inputs["Location"].default_value = (0, 0.62, 0)
+    mapn.inputs["Scale"].default_value = (6.5, 4.6, 1)
     ramp = nt.nodes.new("ShaderNodeValToRGB")
-    ramp.color_ramp.elements[0].color = (0.0, 0.10, 0.30, 1)
-    ramp.color_ramp.elements[1].color = (0.55, 0.80, 0.95, 1)
+    ramp.color_ramp.elements[0].color = (0.22, 0.42, 0.85, 1)
+    ramp.color_ramp.elements[1].color = (0.82, 0.90, 1.0, 1)
     nt.links.new(tc.outputs["Object"], mapn.inputs["Vector"])
-    nt.links.new(mapn.outputs["Vector"], tex.inputs["Vector"])
-    # soft diagonal bands: refraction bends them, which is how the eye reads clear glass
-    wave = nt.nodes.new("ShaderNodeTexWave")
-    wave.inputs["Scale"].default_value = 0.9
-    wave.inputs["Distortion"].default_value = 2.0
-    wave.inputs["Detail"].default_value = 1.0
-    nt.links.new(tc.outputs["Object"], wave.inputs["Vector"])
-    shade = nt.nodes.new("ShaderNodeMath")
-    shade.operation = "MULTIPLY_ADD"
-    shade.inputs[1].default_value = 0.18
-    shade.inputs[2].default_value = 0.82
-    nt.links.new(wave.outputs["Fac"], shade.inputs[0])
-    lum = nt.nodes.new("ShaderNodeMath")
-    lum.operation = "MULTIPLY"
-    nt.links.new(tex.outputs["Color"], lum.inputs[0])
-    nt.links.new(shade.outputs["Value"], lum.inputs[1])
-    nt.links.new(lum.outputs["Value"], ramp.inputs["Fac"])
+    nt.links.new(mapn.outputs["Vector"], grad.inputs["Vector"])
+    nt.links.new(grad.outputs["Color"], ramp.inputs["Fac"])
     nt.links.new(ramp.outputs["Color"], em.inputs["Color"])
-    nt.links.new(em.outputs["Emission"], nt.nodes["Material Output"].inputs["Surface"])
     back.data.materials.append(m)
-
     back.parent = rig
-    bpy.ops.object.camera_add(location=(0, -2.6, 5.2))
+
+    # light shafts from above: long soft emissive strips fading downward
+    shaft_mat, nt, em = emission_material("Shaft", (0.9, 0.95, 1.0), 2.5)
+    tc = nt.nodes.new("ShaderNodeTexCoord")
+    sep = nt.nodes.new("ShaderNodeSeparateXYZ")
+    fade = nt.nodes.new("ShaderNodeValToRGB")
+    fade.color_ramp.elements[0].color = (0, 0, 0, 1)
+    fade.color_ramp.elements[1].position = 1.0
+    fade.color_ramp.elements[1].color = (1, 1, 1, 1)
+    side = nt.nodes.new("ShaderNodeMath")
+    side.operation = "PINGPONG"
+    side.inputs[1].default_value = 0.5
+    soft = nt.nodes.new("ShaderNodeMath")
+    soft.operation = "MULTIPLY"
+    nt.links.new(tc.outputs["UV"], sep.inputs[0])
+    nt.links.new(sep.outputs["Y"], fade.inputs["Fac"])
+    nt.links.new(sep.outputs["X"], side.inputs[0])
+    nt.links.new(fade.outputs["Color"], soft.inputs[0])
+    nt.links.new(side.outputs["Value"], soft.inputs[1])
+    mix = nt.nodes.new("ShaderNodeMixShader")
+    tr = nt.nodes.new("ShaderNodeBsdfTransparent")
+    nt.links.new(soft.outputs["Value"], mix.inputs["Fac"])
+    nt.links.new(tr.outputs["BSDF"], mix.inputs[1])
+    nt.links.new(em.outputs["Emission"], mix.inputs[2])
+    nt.links.new(mix.outputs["Shader"], nt.nodes["Material Output"].inputs["Surface"])
+    for x, tilt, width in [(-2.6, -18, 0.9), (-1.2, -10, 0.6), (1.6, 12, 0.8), (3.0, 20, 0.5)]:
+        bpy.ops.mesh.primitive_plane_add(size=1, location=(x, 3.6, 4.2),
+                                         rotation=(math.radians(90), math.radians(tilt), 0))
+        sh = bpy.context.object
+        sh.name = "LightShaft"
+        sh.scale = (width, 8, 1)
+        sh.data.materials.append(shaft_mat)
+        sh.visible_shadow = False
+        sh.parent = rig
+
+    bpy.ops.object.camera_add(location=(0, -7.4, 1.55))
     cam = bpy.context.object
     cam.parent = rig
-    cam.constraints.new("TRACK_TO").target = rig
-    cam.data.lens = 85
+    target = bpy.data.objects.new("CameraTarget", None)
+    bpy.context.scene.collection.objects.link(target)
+    target.location = (0, 0, 1.12)
+    target.parent = rig
+    cam.constraints.new("TRACK_TO").target = target
+    cam.data.lens = 70
     cam.data.dof.use_dof = True
-    cam.data.dof.focus_object = rig
-    cam.data.dof.aperture_fstop = 2.8
+    cam.data.dof.focus_object = target
+    cam.data.dof.aperture_fstop = 4.0
     sc.camera = cam
 
-    # long strip lights read as crisp highlights along the bevelled glass edges
-    for loc, energy, color in [((-2.2, -1.2, 2.6), 350, (1.0, 0.95, 0.9)),
-                               ((2.4, 0.8, 2.2), 250, (0.8, 0.92, 1.0)),
-                               ((0.0, 2.6, 1.0), 300, (0.7, 0.9, 1.0))]:
+    # key from above-front, two rim lights behind for edge glints, a top light for floor pools
+    for loc, energy, size, color in [((0.0, -4.0, 5.0), 350, 4.0, (1.0, 1.0, 1.0)),
+                                     ((-3.5, 2.5, 3.0), 600, 0.6, (0.85, 0.92, 1.0)),
+                                     ((3.5, 2.5, 3.0), 600, 0.6, (1.0, 0.92, 0.85)),
+                                     ((0.0, 0.5, 6.0), 120, 1.5, (1.0, 1.0, 1.0))]:
         bpy.ops.object.light_add(type="AREA", location=loc)
         lt = bpy.context.object
         lt.data.energy = energy
-        lt.data.shape = "RECTANGLE"
-        lt.data.size, lt.data.size_y = 3.0, 0.25
+        lt.data.size = size
         lt.data.color = color
         lt.parent = rig
-        lt.rotation_euler = (0, 0, 0)
-        con = lt.constraints.new("TRACK_TO")
-        con.target = rig
-
+        lt.constraints.new("TRACK_TO").target = target
     return rig
 
 
 # ---------------------------------------------------------------- variations
-# A spec is one brand shape (x, y, scale, rotation_deg, mirror) in the sector above the
-# first arm (arm along +x). d6_orbit repeats it 12 times: 6 arms, each with its mirror image.
-# The brand shape keeps its aspect ratio throughout. Units: centre to tip is about 1.
-# Tints run from clear ice to Access Blue.
+# rows: (t, a, s[, axis]) -> a V row rooted t from the centre, opening at a degrees, shape
+# length s along its long diagonal. axis=30 roots it on the line between two arms.
+# Units: centre to arm tip is about 1.
 
-def mix(t):
-    return tuple(1 - t + t * c for c in ACCESS_BLUE)
+def flake(name, *rows):
+    return dict(name=name, rows=[row(*r) for r in rows])
 
 
 VARIANTS = [
-    dict(name="01 arrow arms", tint=mix(0.35), film=0,
-         specs=[(0.76, 0.17, 0.46, 0), (0.38, 0.08, 0.2, 0), (0.17, 0.04, 0.07, 0)]),
-    dict(name="02 swallowtail", tint=mix(0.2), film=380,
-         specs=[(0.78, 0.15, 0.4, 0, True), (0.42, 0.07, 0.19, 0, True), (0.2, 0.04, 0.07, 0, True)]),
-    dict(name="03 feather", tint=mix(0.45), film=0,
-         specs=[(0.86, 0.23, 0.24, 30), (0.62, 0.17, 0.19, 30), (0.4, 0.11, 0.12, 30),
-                (0.22, 0.06, 0.06, 30)]),
-    dict(name="04 dendrite", tint=mix(0.25), film=0,
-         specs=[(0.88, 0.05, 0.16, 0), (0.66, 0.05, 0.14, 0), (0.44, 0.04, 0.12, 0),
-                (0.24, 0.03, 0.08, 0), (0.7, 0.2, 0.14, 60), (0.48, 0.16, 0.1, 60)]),
-    dict(name="05 halo", tint=mix(0.55), film=0,
-         specs=[(0.8, 0.12, 0.3, 0), (0.46, 0.14, 0.14, 90), (0.22, 0.05, 0.06, 90)]),
-    dict(name="06 crown", tint=mix(0.3), film=450,
-         specs=[(0.42, 0.088, 0.24, 0), (0.78, 0.13, 0.22, 30), (0.537, 0.25, 0.12, 30)]),
-    dict(name="07 star burst", tint=mix(0.4), film=0,
-         specs=[(0.78, 0.22, 0.46, 15), (0.34, 0.07, 0.13, 15)]),
-    dict(name="08 sectored plate", tint=mix(0.15), film=320,
-         specs=[(0.86, 0.12, 0.3, 0), (0.56, 0.12, 0.26, 0), (0.3, 0.06, 0.15, 0)]),
-    dict(name="09 fern", tint=mix(0.5), film=0,
-         specs=[(0.22 + 0.15 * k, 0.038, 0.09, 0) for k in range(5)]
-               + [(0.34 + 0.15 * k, 0.11, 0.054, 60) for k in range(4)]),
-    dict(name="10 inward arrows", tint=mix(0.25), film=400,
-         specs=[(0.4, 0.086, 0.24, 0), (0.78, 0.112, 0.26, -25)]),
-    dict(name="11 fork", tint=mix(0.6), film=0,
-         specs=[(0.8, 0.25, 0.4, 30, True), (0.42, 0.08, 0.2, 0)]),
-    dict(name="12 tiered", tint=mix(0.35), film=300, thick=0.2,
-         specs=[(0.86, 0.12, 0.34, 0), (0.55, 0.1, 0.25, 0, True), (0.3, 0.05, 0.13, 0)]),
+    flake("01 frond", (0.78, 10, 0.3), (0.56, 50, 0.3), (0.34, 50, 0.22), (0.16, 45, 0.12)),
+    flake("02 fern", (0.84, 8, 0.24), (0.66, 38, 0.2), (0.5, 38, 0.18), (0.35, 38, 0.15),
+          (0.21, 38, 0.11)),
+    flake("03 open ring", (0.8, 12, 0.28), (0.56, 55, 0.3), (0.34, 60, 0.22)),
+    flake("04 dense frond", (0.8, 10, 0.28), (0.6, 45, 0.25), (0.41, 45, 0.2), (0.24, 45, 0.14),
+          (0.1, 45, 0.08)),
+    flake("05 wide wings", (0.78, 15, 0.3), (0.5, 65, 0.3), (0.26, 65, 0.18)),
+    flake("06 spear", (0.9, 6, 0.24), (0.66, 25, 0.24), (0.42, 25, 0.22), (0.2, 25, 0.13)),
+    flake("07 heavy core", (0.84, 10, 0.18), (0.64, 45, 0.2), (0.4, 45, 0.3), (0.16, 40, 0.12)),
+    flake("08 crown", (0.8, 20, 0.3), (0.52, 50, 0.28), (0.3, 40, 0.18), (0.5, 40, 0.16, 30)),
+    flake("09 twelve point", (0.8, 10, 0.26), (0.56, 45, 0.24), (0.34, 45, 0.18), (0.62, 30, 0.2, 30)),
+    flake("10 halo", (0.8, 12, 0.26), (0.56, 75, 0.26), (0.32, 70, 0.2)),
+    flake("11 feather", (0.86, 8, 0.18), *[(0.72 - 0.13 * k, 42, 0.15 - 0.012 * k) for k in range(5)]),
+    flake("12 bold", (0.76, 14, 0.36), (0.46, 50, 0.36), (0.2, 40, 0.16)),
 ]
 
 
@@ -422,30 +443,30 @@ def contact_sheet(paths, out, cols=4):
     ims = [Image.open(p) for p in paths]
     w, h = ims[0].size
     rows = math.ceil(len(ims) / cols)
-    sheet = Image.new("RGB", (cols * w, rows * h))
+    sheet = Image.new("RGB", (cols * w, rows * h), "white")
     for i, im in enumerate(ims):
         sheet.paste(im.convert("RGB"), ((i % cols) * w, (i // cols) * h))
-    sheet.thumbnail((cols * 600, rows * 600))
+    sheet.thumbnail((cols * 640, rows * 640))
     sheet.save(out)
 
 
 def main():
     argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else sys.argv[1:]
     ap = argparse.ArgumentParser()
-    ap.add_argument("--samples", type=int, default=160)
-    ap.add_argument("--res", type=int, default=900)
+    ap.add_argument("--samples", type=int, default=128)
+    ap.add_argument("--res", type=int, default=1200)
     ap.add_argument("--only", default="")
     args = ap.parse_args(argv)
     only = {int(i) for i in args.only.split(",") if i}
 
     os.makedirs(RENDER_DIR, exist_ok=True)
     rig = setup_scene(args.samples, args.res)
-    spacing = 3.0
+    mesh = brand_mesh(0.1, glass_material())
+    spacing = 4.0
     flakes = []
     for i, p in enumerate(VARIANTS, 1):
-        loc = (((i - 1) % 4) * spacing, -((i - 1) // 4) * spacing, 0)
-        mat = glass_material(f"Ice_{i:02d}", p["tint"], p["film"])
-        flakes.append(build_snowflake(i, p, mat, loc))
+        # bottom arm tip hovers just above the floor
+        flakes.append(build_snowflake(i, p, mesh, ((i - 1) * spacing, 0, 1.12)))
 
     bpy.ops.wm.save_as_mainfile(filepath=os.path.join(HERE, "snowflakes.blend"))
 
@@ -456,7 +477,11 @@ def main():
         paths.append(path)
         if only and i not in only:
             continue
-        rig.location = ob.location
+        # show only this flake so neighbours never appear in reflections or refraction
+        for other in flakes:
+            for child in other.children:
+                child.hide_render = other is not ob
+        rig.location = (ob.location.x, 0, 0)
         sc.render.filepath = path
         bpy.ops.render.render(write_still=True)
         print(f"rendered {path}", flush=True)
