@@ -13,7 +13,7 @@ outward, each gliding to a stop. The finished flake holds from frame 212.
 Usage:
     python3 snowflakes/dance_flakes.py --2d OUT.png
     python3 snowflakes/dance_flakes.py [--stills] [--preview N] [--frames 1,90,...]
-                                       [--samples N] [--res PX]
+                                       [--samples N] [--res PX] [--genomes S07,S12]
 Outputs in snowflakes/dance/.
 """
 import argparse
@@ -275,7 +275,7 @@ def mirrored_copy(me):
 def build_animated(p, meshes, location, seed):
     import bpy
     rng = random.Random(seed)
-    tag = p["name"][0]
+    tag = p["name"].split()[0]
     root = bpy.data.objects.new(f"Dance_{tag}", None)
     bpy.context.scene.collection.objects.link(root)
     shapes = base.layout(p)
@@ -314,7 +314,15 @@ def main():
     ap.add_argument("--frames", default="")
     ap.add_argument("--samples", type=int, default=128)
     ap.add_argument("--res", type=int, default=1200)
+    ap.add_argument("--genomes", default="", help="evolved designs to use instead, e.g. S07,S12")
     args = ap.parse_args(argv)
+    global VARIANTS
+    if args.genomes:
+        import json
+        from evolve_flakes import express
+        with open(os.path.join(base.HERE, "evolve", "genomes.json")) as fh:
+            pool = json.load(fh)
+        VARIANTS = [express(pool[k]["tiers"], f"{k} evolved")[0] for k in args.genomes.split(",")]
 
     os.makedirs(OUT, exist_ok=True)
     rig = base.setup_scene(args.samples, args.res)
@@ -336,14 +344,14 @@ def main():
         sc.frame_set(FRAMES)
         for p, ob in zip(VARIANTS, flakes):
             solo(ob)
-            sc.render.filepath = os.path.join(OUT, f"dance_{p['name'][0]}_final.png")
+            sc.render.filepath = os.path.join(OUT, f"dance_{p['name'].split()[0]}_final.png")
             bpy.ops.render.render(write_still=True)
             print("rendered", sc.render.filepath, flush=True)
 
     if args.preview:
         p, ob = VARIANTS[args.preview - 1], flakes[args.preview - 1]
         solo(ob)
-        tag = p["name"][0]
+        tag = p["name"].split()[0]
         if args.frames:
             for f in [int(x) for x in args.frames.split(",")]:
                 sc.frame_set(f)
