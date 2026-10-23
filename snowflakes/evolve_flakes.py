@@ -8,7 +8,7 @@ varied set.
 
 Usage:
     python3 snowflakes/evolve_flakes.py [--seed N] [--count 24]
-    python3 snowflakes/evolve_flakes.py --parents S06 --strength 0.6
+    python3 snowflakes/evolve_flakes.py --parents S06 --strength 0.12 --tag S06b
 Outputs in snowflakes/evolve/ (or evolve/<parents>/): gallery.png and genomes.json.
 """
 import argparse
@@ -127,7 +127,15 @@ def clamp(v, lo, hi):
 def mutate(genome, rng, strength=1.0):
     """strength < 1 keeps children close to the parent: smaller nudges, rarer bold moves."""
     g = copy.deepcopy(genome)
-    for _ in range(rng.randint(1, 3)):
+    for _ in range(rng.randint(1, 3) if strength >= 0.5 else 1):
+        if rng.random() > strength:
+            # gentle: most changes are small nudges to one tier
+            tier = rng.choice(g)
+            tier["t"] = round(clamp(tier["t"] + rng.gauss(0, 0.05 * strength), 0.1, 0.86), 3)
+            tier["a"] = round(clamp(tier["a"] + rng.gauss(0, 9 * strength), 6, 72), 1)
+            tier["s"] = round(clamp(tier["s"] * rng.uniform(1 - 0.15 * strength, 1 + 0.18 * strength),
+                                    0.06, 0.32), 3)
+            continue
         op = rng.random()
         if op < 0.12 * strength:
             # bold hero move: new angle, new place, or onto the between-arm axis
@@ -184,7 +192,7 @@ def evolve(seed, count, parents=None, strength=1.0, generations=14, brood=60):
     for gen in range(generations):
         children = []
         for _ in range(brood):
-            if rng.random() < 0.3:
+            if rng.random() < 0.3 and len(parents) > 1:
                 a, b = rng.sample([p[1] for p in pop], 2) if len(pop) > 1 else (pop[0][1], pop[0][1])
                 child = mutate(crossover(a, b, rng), rng, strength)
             else:
@@ -241,13 +249,15 @@ def main():
     ap.add_argument("--count", type=int, default=24)
     ap.add_argument("--parents", default="", help="breed from picked designs, e.g. S06 or S06,S12")
     ap.add_argument("--strength", type=float, default=1.0, help="mutation size; below 1 stays close")
+    ap.add_argument("--tag", default="", help="name for this round, e.g. S06b (defaults to the parents)")
     args = ap.parse_args()
     parents, out, prefix = None, OUT, "S"
     if args.parents:
         pool = load_pool()
         parents = {k: pool[k]["tiers"] for k in args.parents.split(",")}
-        prefix = "+".join(parents) + "-"
-        out = os.path.join(OUT, "+".join(parents))
+        tag = args.tag or "+".join(parents)
+        prefix = tag + "-"
+        out = os.path.join(OUT, tag)
     os.makedirs(out, exist_ok=True)
     picked = evolve(args.seed, args.count, parents, args.strength)
     labels = [o if parents and o in parents else f"{prefix}{i:02d}" for i, (_, _, _, o) in enumerate(picked)]
