@@ -8,7 +8,7 @@ varied set.
 
 Usage:
     python3 snowflakes/evolve_flakes.py [--seed N] [--count 24]
-    python3 snowflakes/evolve_flakes.py --parents S06 --strength 0.12 --tag S06b
+    python3 snowflakes/evolve_flakes.py --parents S06 --strength 0.35 --band 1.8,2.8 --count 6 --tag S06c
 Outputs in snowflakes/evolve/ (or evolve/<parents>/): gallery.png and genomes.json.
 """
 import argparse
@@ -181,7 +181,7 @@ def crossover(a, b, rng):
 
 # ---------------------------------------------------------------- search
 
-def evolve(seed, count, parents=None, strength=1.0, generations=14, brood=60):
+def evolve(seed, count, parents=None, strength=1.0, band=None, generations=14, brood=60):
     rng = random.Random(seed)
     parents = parents or PARENTS
     pop = []
@@ -206,19 +206,26 @@ def evolve(seed, count, parents=None, strength=1.0, generations=14, brood=60):
         ranked = sorted(pop + children, key=lambda x: -x[0])
         pop = ranked[:10] + rng.sample(ranked[10:], min(6, len(ranked[10:])))
         print(f"generation {gen}: {len(children)} viable, best {pop[0][0]:.2f}", flush=True)
-    return pick_varied(archive, count, keep=archive[:len(parents)] if parents is not PARENTS else ())
+    return pick_varied(archive, count, keep=archive[:len(parents)] if parents is not PARENTS else (), band=band)
 
 
 def features(m):
     return tuple(m["occ"])
 
 
-def pick_varied(archive, count, keep=()):
+def pick_varied(archive, count, keep=(), band=None):
     """Greedy: parents (if kept) or the best first, then whichever good design is most unlike
-    those already picked."""
-    good = sorted([x for x in archive if x[2] is not None], key=lambda x: -x[0])[:count * 8]
+    those already picked. band=(lo, hi) keeps only designs that far from the first parent,
+    so a round is neither near-copies nor a different flake."""
+    good = sorted([x for x in archive if x[2] is not None], key=lambda x: -x[0])
+    if band and keep:
+        ref = features(keep[0][2])
+        good = [c for c in good if band[0] <= math.dist(features(c[2]), ref) <= band[1]]
+        print(f"{len(good)} designs inside the band", flush=True)
+    good = good[:max(count * 8, 48)]
     picked = list(keep) or [good[0]]
     good = [c for c in good if c not in picked]
+    count += len(keep)
     while len(picked) < count and len(picked) < len(good):
         def novelty(c):
             return min(math.dist(features(c[2]), features(p[2])) for p in picked)
@@ -250,6 +257,7 @@ def main():
     ap.add_argument("--parents", default="", help="breed from picked designs, e.g. S06 or S06,S12")
     ap.add_argument("--strength", type=float, default=1.0, help="mutation size; below 1 stays close")
     ap.add_argument("--tag", default="", help="name for this round, e.g. S06b (defaults to the parents)")
+    ap.add_argument("--band", default="", help="distance from the first parent to keep, e.g. 1.8,2.8")
     args = ap.parse_args()
     parents, out, prefix = None, OUT, "S"
     if args.parents:
@@ -259,10 +267,11 @@ def main():
         prefix = tag + "-"
         out = os.path.join(OUT, tag)
     os.makedirs(out, exist_ok=True)
-    picked = evolve(args.seed, args.count, parents, args.strength)
+    band = tuple(float(x) for x in args.band.split(",")) if args.band else None
+    picked = evolve(args.seed, args.count, parents, args.strength, band)
     labels = [o if parents and o in parents else f"{prefix}{i:02d}" for i, (_, _, _, o) in enumerate(picked)]
     labels = [f"{x} (parent)" if parents and x in parents else x for x in labels]
-    gallery(picked, os.path.join(out, "gallery.png"), labels)
+    gallery(picked, os.path.join(out, "gallery.png"), labels, cols=min(6, max(3, math.ceil(len(picked) / 2))))
     with open(os.path.join(out, "genomes.json"), "w") as fh:
         json.dump({lab.split()[0]: dict(score=round(sc, 3), origin=origin, tiers=g)
                    for lab, (sc, g, m, origin) in zip(labels, picked)}, fh, indent=1)
