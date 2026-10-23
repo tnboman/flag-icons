@@ -1,14 +1,14 @@
 """Chandelier snowflakes from the Access brand shape, with a dancing assembly animation.
 
-Structure: slender arms built as graduated strands of small crystals (a double strand along
-each arm, side branches as single strands at crystal angles), a fine halo ring at the
-centre, and sparse accents only where a crystal would grow them. Every shape is distinct,
-and the flake keeps its mirror symmetry.
+Structure: a scale hierarchy. Large facets (an arrowhead at each tip, wings mid-arm) carry
+the snowflake silhouette, medium chevrons join them and form the core, and fine prongs
+appear only at the wing tips and arrowheads. Every shape is distinct, and the flake keeps
+its mirror symmetry.
 
 Motion (240 frames at 24 fps): shapes begin as a slow swirl of glints, each orbiting the
 centre on its own spiral while pirouetting and tilting, with depth that breathes like a
 wave. Rings by radius counter-rotate like a kaleidoscope, then lock from the centre
-outward, each settling with a soft sway. The finished flake holds from frame 212.
+outward, each gliding to a stop. The finished flake holds from frame 212.
 
 Usage:
     python3 snowflakes/dance_flakes.py --2d OUT.png
@@ -107,7 +107,7 @@ class Flake:
         """Accent at a strand's tip: two prongs at +-angle, optionally a third straight on."""
         x, y, s, rot, _ = parent
         ux, uy = direction(rot)
-        rx, ry = x + (0.5 * s + base.GAP) * ux, y + (0.5 * s + base.GAP) * uy
+        rx, ry = x + (0.5 * s + 2.2 * base.GAP) * ux, y + (0.5 * s + 2.2 * base.GAP) * uy
         sm = s * ratio
         prongs = [angle, -angle] + ([0] if centre else [])
         for a in prongs:
@@ -122,42 +122,38 @@ def graduated(n, a, b):
     return [a + (b - a) * k / max(n - 1, 1) for k in range(n)]
 
 
-def chandelier():
-    """Spine of graduated chevrons, side branches short-long-short at 60 degrees,
-    crowned spine tip, the halo ring from D, and small pendants between the arms."""
-    f = Flake("E chandelier")
-    for r in [(0.16, 30, 0.07), (0.2, 30, 0.06, 30)]:
-        f.add(base.row(*r), shrink=False)
-    tip = f.chevrons([0.28, 0.4, 0.53, 0.66, 0.78], [0.07, 0.09, 0.1, 0.085, 0.07], [28, 30, 32, 30, 24])
-    f.crown(tip, 0.6, 30, centre=True)
-    for t, sizes in [(0.36, [0.06, 0.045]), (0.56, [0.075, 0.06, 0.045]), (0.74, [0.05])]:
-        branch = f.chain((t, 0.075), 60, sizes)
-        if len(branch) == 3:
-            f.crown(branch[-1], 0.55, 35)
-    for t, s in [(0.4, 0.05), (0.48, 0.04)]:
-        f.add(base.row(t, 12, s, 30), shrink=False)
+def crystal():
+    """Big arrowhead at each tip and large wings mid-arm carry the silhouette; a medium
+    chevron and core ring fill it; fine prongs only at the wing tips and the arrowhead."""
+    f = Flake("G crystal")
+    arrow = f.add(base.row(0.76, 12, 0.28), shrink=False)
+    wing = f.add(base.row(0.44, 50, 0.24), shrink=False)
+    f.add(base.row(0.63, 26, 0.13), shrink=False)
+    f.add(base.row(0.27, 34, 0.13), shrink=False)
+    f.add(base.row(0.13, 30, 0.1, 30), shrink=False)
+    f.add(base.row(0.45, 16, 0.11, 30), shrink=False)
+    f.crown(wing, 0.36, 34)
+    f.crown(arrow, 0.3, 30)
     return f.done()
 
 
-def lace():
-    """Airier: more, smaller chevrons, branches that alternate in length and angle,
-    sparks only on the long branch, a wider halo."""
-    f = Flake("F lace")
-    for r in [(0.14, 30, 0.06), (0.19, 30, 0.055, 30), (0.25, 40, 0.05)]:
-        f.add(base.row(*r), shrink=False)
-    tip = f.chevrons([0.32 + 0.09 * k for k in range(7)], [0.06, 0.065, 0.07, 0.07, 0.065, 0.06, 0.07],
-                     [36, 34, 32, 30, 28, 26, 22])
-    f.crown(tip, 0.65, 26, centre=True)
-    for t, sizes, ang in [(0.4, [0.05, 0.04], 55), (0.58, [0.06, 0.05, 0.04, 0.035], 60), (0.78, [0.045, 0.035], 65)]:
-        branch = f.chain((t, 0.06), ang, sizes)
-        if len(branch) == 4:
-            f.crown(branch[1], 0.5, 70)
-            f.crown(branch[-1], 0.6, 30)
-    f.add(base.row(0.5, 10, 0.045, 30), shrink=False)
+def frond():
+    """A feather of facets growing outward to a bold tip, a medium core ring, and fine
+    sparks on the two largest wings only."""
+    f = Flake("H frond")
+    f.add(base.row(0.13, 30, 0.11, 30), shrink=False)
+    f.add(base.row(0.22, 40, 0.1), shrink=False)
+    f.add(base.row(0.35, 46, 0.15), shrink=False)
+    big = f.add(base.row(0.5, 50, 0.21), shrink=False)
+    f.add(base.row(0.66, 24, 0.12), shrink=False)
+    tip = f.add(base.row(0.79, 14, 0.25), shrink=False)
+    f.crown(big, 0.32, 36)
+    f.crown(tip, 0.28, 34)
+    f.add(base.row(0.5, 14, 0.09, 30), shrink=False)
     return f.done()
 
 
-VARIANTS = [chandelier(), lace()]
+VARIANTS = [crystal(), frond()]
 
 
 def preview_2d(path):
@@ -191,7 +187,7 @@ class Dance:
 
     Free: it orbits the centre on its own radius, pirouetting and tilting, bobbing in depth.
     Formation: it joins its ring, which counter-rotates against its neighbours and sits on
-    its own depth layer. Lock: rings settle from the centre outward with a soft sway."""
+    its own depth layer. Lock: rings glide to a stop from the centre outward."""
 
     def __init__(self, rng, final_xy, final_rot):
         from mathutils import Vector
@@ -221,12 +217,10 @@ class Dance:
         e = smooth(f, 60, self.lock)                     # ring twist unwinds
         ez = smooth(f, self.lock - 24, self.lock)        # depth layer flattens
         wq = smooth(f, self.lock - 80, self.lock - 4)    # pirouette settles
-        # soft sway as the ring arrives, gone by the hold
-        sway = 0.05 * math.sin(2 * math.pi * (f - self.lock) / 22) * \
-            (smooth(f, self.lock - 26, self.lock - 10) - smooth(f, self.lock - 2, min(self.lock + 18, HOLD)))
 
         free_th = self.d0 + self.omega * t
-        ring_th = self.twist * (1 - e) ** 1.3 + sway
+        # long ease-out: the ring glides in and stops, no overshoot
+        ring_th = self.twist * (1 - e) ** 2
         th = self.thf + free_th + (ring_th - free_th) * w
 
         free_r = self.r0 * (1 + 0.06 * math.sin(0.9 * t + self.ph))
