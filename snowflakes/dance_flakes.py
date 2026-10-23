@@ -318,10 +318,8 @@ def main():
     args = ap.parse_args(argv)
     global VARIANTS
     if args.genomes:
-        import json
-        from evolve_flakes import express
-        with open(os.path.join(base.HERE, "evolve", "genomes.json")) as fh:
-            pool = json.load(fh)
+        from evolve_flakes import express, load_pool
+        pool = load_pool()
         VARIANTS = [express(pool[k]["tiers"], f"{k} evolved")[0] for k in args.genomes.split(",")]
 
     os.makedirs(OUT, exist_ok=True)
