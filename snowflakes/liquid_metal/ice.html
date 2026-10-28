@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ice and Frost Study</title>
+<style>
+  :root { --ink: #0b2340; }
+  body { margin: 0; background: #0b2340; color: #fff; font: 14px/1.4 system-ui, sans-serif; }
+  main { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; padding: 16px; }
+  figure { margin: 0; }
+  figcaption { padding-top: 6px; color: #cfe6f5; }
+
+  /* the scene behind each piece: drifting Access-blue light and type, so blur and
+     translucency have something to act on */
+  .scene { position: relative; aspect-ratio: 1; overflow: hidden; border-radius: 8px;
+           background: #0d2f57; isolation: isolate; }
+  .scene .light { position: absolute; inset: -20%; z-index: -2;
+    background:
+      radial-gradient(28% 28% at 30% 35%, #00bdf2 0%, transparent 70%),
+      radial-gradient(30% 30% at 72% 62%, #7fe0ff 0%, transparent 70%),
+      radial-gradient(24% 24% at 55% 20%, #ffffff 0%, transparent 70%),
+      radial-gradient(40% 40% at 20% 85%, #1d6fd1 0%, transparent 70%);
+    animation: drift 9s ease-in-out infinite alternate; }
+  .scene .type { position: absolute; inset: 0; z-index: -1; display: grid; place-content: center;
+    font: 800 64px/0.95 system-ui, sans-serif; letter-spacing: -0.03em; text-align: center;
+    color: #ffffff; opacity: 0.9; animation: slide 9s ease-in-out infinite alternate; }
+  @keyframes drift { to { transform: translate(8%, -6%) rotate(8deg); } }
+  @keyframes slide { to { transform: translateX(-12%); } }
+
+  /* ice: the shader canvas sits on top of the scene */
+  .ice { position: absolute; inset: 0; }
+
+  /* frost: a pane cut to the shape that blurs what is behind it */
+  .frost { position: absolute; inset: 8%;
+    -webkit-mask: var(--shape) center / contain no-repeat; mask: var(--shape) center / contain no-repeat;
+    backdrop-filter: blur(14px) saturate(1.35) brightness(1.12);
+    -webkit-backdrop-filter: blur(14px) saturate(1.35) brightness(1.12);
+    background:
+      linear-gradient(160deg, rgba(255,255,255,.34), rgba(255,255,255,.08) 55%, rgba(200,235,255,.18)),
+      var(--grain); }
+  /* a fine light edge on every shape: outline-only copies of the SVGs laid on top */
+  .frost-rim { position: absolute; inset: 8%; width: 84%; height: 84%; object-fit: contain;
+    pointer-events: none; mix-blend-mode: screen; }
+</style>
+</head>
+<body>
+<!--
+  Two takes on an ice look for the Access shape and snowflake S06c-06.
+  Ice: Paper Shaders' LiquidMetal (Apache-2.0, vendored in ./vendor/paper-shaders) with its
+  fragment shader patched for ice: frosty white and glacial blue instead of chrome white and
+  black, dark bands made see-through, a fine frost grain, and gentler prism fringes.
+  Frost: CSS backdrop-filter blur, masked to the shape, over a moving scene.
+  Serve this folder over http (ES modules don't load from file://).
+  ?frame=N&speed=0&still renders a fixed shader frame on a still scene; ?t=SECONDS freezes both.
+-->
+<main>
+  <figure>
+    <div class="scene"><div class="light"></div><div class="type">ACCESS<br>WINTER</div>
+      <div class="ice" data-image="./access-shape.svg"></div></div>
+    <figcaption>Ice: liquid metal, retuned (brand shape)</figcaption>
+  </figure>
+  <figure>
+    <div class="scene"><div class="light"></div><div class="type">ACCESS<br>WINTER</div>
+      <div class="frost" style="--shape: url(./access-shape.svg)"></div>
+      <img class="frost-rim" src="./access-shape-rim.svg" alt=""></div>
+    <figcaption>Frost: blurs what's behind it (brand shape)</figcaption>
+  </figure>
+  <figure>
+    <div class="scene"><div class="light"></div><div class="type">ACCESS<br>WINTER</div>
+      <div class="frost" style="--shape: url(./snowflake-S06c-06.svg)"></div>
+      <img class="frost-rim" src="./snowflake-S06c-06-rim.svg" alt=""></div>
+    <figcaption>Frost: snowflake S06c-06</figcaption>
+  </figure>
+</main>
+<script type="module">
+  import {
+    ShaderMount, liquidMetalFragmentShader, toProcessedLiquidMetal,
+    ShaderFitOptions, defaultObjectSizing, getShaderColorFromString,
+  } from "./vendor/paper-shaders/dist/index.js";
+
+  const q = new URLSearchParams(location.search);
+  // ?t=SECONDS freezes everything at one moment (CSS drift and shader together), for video frames
+  const tFix = q.has("t") ? Number(q.get("t")) : null;
+  const speed = tFix !== null ? 0 : q.has("speed") ? Number(q.get("speed")) : 0.6;
+  const frame = tFix !== null ? tFix * 600 : Number(q.get("frame") || 0);
+
+  // Patch the shader for ice. Each replacement must match the vendored source exactly,
+  // so a library update that changes these lines fails loudly instead of silently.
+  function patch(src, from, to) {
+    if (!src.includes(from)) throw new Error(`ice patch did not match: ${from}`);
+    return src.replace(from, to);
+  }
+  let iceShader = liquidMetalFragmentShader;
+  // chrome white and near-black become frosty white and glacial blue
+  iceShader = patch(iceShader, "vec3 color1 = vec3(.98, 0.98, 1.);", "vec3 color1 = vec3(.97, .995, 1.);");
+  iceShader = patch(iceShader, "vec3 color2 = vec3(.1, .1, .1 + .1 * smoothstep(.7, 1.3, diagTLtoBR));",
+    "vec3 color2 = vec3(.42, .66, .82 + .08 * smoothstep(.7, 1.3, diagTLtoBR));");
+  // darker bands turn see-through, a fine frost grain, and a brighter rim where the shape thins
+  iceShader = patch(iceShader, "color = vec3(r, g, b);\n  color *= opacity;",
+    `color = vec3(r, g, b);
+  float lum = dot(color, vec3(.3, .59, .11));
+  color += .035 * snoise(uv * 140.) + .02 * snoise(uv * 35. + t);
+  color = mix(color, vec3(1.), .35 * smoothstep(.55, 1., edge));
+  opacity *= mix(.38, .95, smoothstep(.55, .98, lum)) + .3 * smoothstep(.6, 1., edge);
+  opacity = clamp(opacity, 0., 1.);
+  color *= opacity;`);
+
+  const params = {
+    colorBack: "#00000000", colorTint: "#e3f7ff", distortion: 0.1, repetition: 1.6,
+    shiftRed: 0.12, shiftBlue: 0.22, contour: 0.45, softness: 0.35, angle: 80,
+  };
+
+  function loadImage(src) {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = reject;
+      img.src = src;
+    });
+  }
+
+  async function mount(el) {
+    const image = await loadImage(URL.createObjectURL((await toProcessedLiquidMetal(el.dataset.image)).pngBlob));
+    const s = { ...defaultObjectSizing, scale: 0.8 };
+    new ShaderMount(el, iceShader, {
+      u_colorBack: getShaderColorFromString(params.colorBack),
+      u_colorTint: getShaderColorFromString(params.colorTint),
+      u_image: image, u_isImage: true, u_shape: 0,
+      u_contour: params.contour, u_distortion: params.distortion, u_softness: params.softness,
+      u_repetition: params.repetition, u_shiftRed: params.shiftRed, u_shiftBlue: params.shiftBlue,
+      u_angle: params.angle,
+      u_fit: ShaderFitOptions[s.fit], u_scale: s.scale, u_rotation: s.rotation,
+      u_offsetX: s.offsetX, u_offsetY: s.offsetY, u_originX: s.originX, u_originY: s.originY,
+      u_worldWidth: s.worldWidth, u_worldHeight: s.worldHeight,
+    }, { premultipliedAlpha: true, alpha: true }, speed, frame, 2, undefined, ["u_image"]);
+  }
+
+  // grain for the frost panes, generated once so no image file is needed
+  const c = document.createElement("canvas");
+  c.width = c.height = 128;
+  const g = c.getContext("2d");
+  const px = g.createImageData(128, 128);
+  for (let i = 0; i < px.data.length; i += 4) {
+    const v = 200 + Math.random() * 55;
+    px.data.set([v, v, v, 14], i);
+  }
+  g.putImageData(px, 0, 0);
+  document.documentElement.style.setProperty("--grain", `url(${c.toDataURL()})`);
+
+  if (q.has("still")) document.querySelectorAll(".light, .type").forEach((el) => el.style.animation = "none");
+  if (tFix !== null) document.querySelectorAll(".light, .type").forEach((el) => {
+    el.style.animationDelay = `-${tFix}s`;
+    el.style.animationPlayState = "paused";
+  });
+  Promise.all([...document.querySelectorAll(".ice")].map(mount))
+    .then(() => document.body.dataset.ready = "1")
+    .catch((e) => { document.body.dataset.error = e.message; console.error(e); });
+</script>
+</body>
+</html>
