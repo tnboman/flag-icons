@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Liquid Metal Study</title>
+<style>
+  :root { --bg: #eceef1; --ink: #4a5260; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.4 system-ui, sans-serif; }
+  main { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; padding: 16px; }
+  figure { margin: 0; }
+  .stage { aspect-ratio: 1; }
+  figcaption { padding-top: 6px; }
+</style>
+</head>
+<body>
+<!--
+  Paper Shaders "Liquid Metal" (Apache-2.0, vendored in ./vendor/paper-shaders) driven from plain JS.
+  The look in Cursor's loading cube: chrome stripes run across a pillow-shaped height field built
+  from the logo (a Poisson solve), bend along its edges, and split red/blue for the rainbow fringes.
+  Serve this folder over http (ES modules don't load from file://), e.g. python3 -m http.server.
+  ?frame=N&speed=0 renders a fixed frame, used for the stills.
+-->
+<main>
+  <figure><div class="stage" data-image="./access-shape.svg"></div><figcaption>Access brand shape</figcaption></figure>
+  <figure><div class="stage" data-image="./snowflake-S06c-06.svg"></div><figcaption>Snowflake S06c-06</figcaption></figure>
+  <figure><div class="stage" data-shape="diamond"></div><figcaption>Paper's default preset (built-in diamond)</figcaption></figure>
+</main>
+<script type="module">
+  import {
+    ShaderMount, liquidMetalFragmentShader, toProcessedLiquidMetal, LiquidMetalShapes,
+    ShaderFitOptions, defaultObjectSizing, getShaderColorFromString,
+  } from "./vendor/paper-shaders/dist/index.js";
+
+  const q = new URLSearchParams(location.search);
+  const speed = q.has("speed") ? Number(q.get("speed")) : 1;
+  const frame = Number(q.get("frame") || 0);
+
+  // Paper's "Default" preset, with a transparent back so the page colour shows through
+  const params = {
+    colorBack: "#00000000", colorTint: "#ffffff", distortion: 0.07, repetition: 2,
+    shiftRed: 0.3, shiftBlue: 0.3, contour: 0.4, softness: 0.1, angle: 70,
+  };
+
+  // the vanilla ShaderMount takes a loaded <img>, not a URL (the React wrapper does this step)
+  function loadImage(src) {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = reject;
+      img.src = src;
+    });
+  }
+
+  async function mount(el) {
+    const image = el.dataset.image
+      ? await loadImage(URL.createObjectURL((await toProcessedLiquidMetal(el.dataset.image)).pngBlob))
+      : "";
+    const s = { ...defaultObjectSizing, scale: image ? 0.8 : 0.6 };
+    new ShaderMount(el, liquidMetalFragmentShader, {
+      u_colorBack: getShaderColorFromString(params.colorBack),
+      u_colorTint: getShaderColorFromString(params.colorTint),
+      u_image: image || undefined,
+      u_isImage: Boolean(image),
+      u_shape: LiquidMetalShapes[el.dataset.shape || "none"] ?? 0,
+      u_contour: params.contour, u_distortion: params.distortion, u_softness: params.softness,
+      u_repetition: params.repetition, u_shiftRed: params.shiftRed, u_shiftBlue: params.shiftBlue,
+      u_angle: params.angle,
+      u_fit: ShaderFitOptions[s.fit], u_scale: s.scale, u_rotation: s.rotation,
+      u_offsetX: s.offsetX, u_offsetY: s.offsetY, u_originX: s.originX, u_originY: s.originY,
+      u_worldWidth: s.worldWidth, u_worldHeight: s.worldHeight,
+    }, undefined, speed, frame, 2, undefined, ["u_image"]);
+  }
+
+  Promise.all([...document.querySelectorAll(".stage")].map(mount))
+    .then(() => document.body.dataset.ready = "1")
+    .catch((e) => { document.body.dataset.error = e.message; console.error(e); });
+</script>
+</body>
+</html>
